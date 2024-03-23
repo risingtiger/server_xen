@@ -1,235 +1,103 @@
 
 
-type bool  = boolean; type str  = string; type int  = number;
+//type bool  = boolean; type str  = string; type int  = number;
 
-declare var app:any;
-declare var APPVERSION: str;
+type SERVER_MAINS_T = { app:any, db:any, sheets:any, notifications:any, sse:any, appversion:number, validate_request:(res:any, req:any)=>Promise<string> }
+const SERVER_MAINS:SERVER_MAINS_T = { app:{}, db:{}, sheets:{}, notifications:{}, sse:{}, appversion: 0, validate_request: (_req:any) => Promise.resolve("") }
 
-
-//{--app_imports--}
-import Particle from "./particle.js";
-import Stats from "./admin/stats.js";
-import Admin_Particle from "./admin/admin_particle.js";
-
-//import { Particle_Data_Usage_All_Product_Chips }  from "./particle_data_usage.js";
-//import { General_Funcs_Get_Particle_Device_Info }  from "./generalfuncs.js";
-//import { Admin_Particle_Rename_Devices_To_Match_Machine_Chip } from "./admin_particle.js";
-//import { Get_Machines_To_Sync_With_PWTData, Sync_PWT_Machines } from "./pwtdatasync.js";
-//import { Location_Match } from "./location_match.js"
-//import { Reconcile }  from "./reconcile.js";
-//import { Misc_Quicky_Show_Prop_Of_All_Machines }  from "./misc_quickies.js";
-//import { GetMachinesForSync as AdminPWTDataGetMachinesForSync, Sync as AdminPWTDataSync } from "./admin/pwtdatasync.js";
-//{--end_app_imports--}
+import Finance from "./finance.js"
+import Admin_Firestore from "./admin/admin_firestore.js"
 
 
 
 
-//{--app_declarations--}
-const APPINSTANCE_PROJECTID   = "purewatertech"
-const APPINSTANCE_KEYJSONFILE = "/Users/dave/.ssh/purewatertech-ad1adb2947b8.json"
-const APPINSTANCE_IDENTITY_PLATFORM_API = "AIzaSyCdBd4FDBCZbL03_M4k2mLPaIdkUo32giI"
-//{--end_app_declarations--}
-
-
-
-
-//{--app_routes--}
-
-
-app.get( '/api/pwt/particle/locatechip_by_celltower', particle_locatechip_by_celltower)       
-
-app.get( '/api/pwt/particle/getchipdetails',          particle_get_device_info)
-
-app.get( '/api/pwt/admin/stats/particle',             admin_stats_particle)
-
-/*
-app.get("/api/sse_listen_test_trigger", (_req, res) => {
-    SSEvents.TriggerUpdate(SSEvents.SSE_Triggers.PWTSync, ["TEST PWTSYNC UPDATE"])
-
-    res.setHeader('Appversion', APPVERSION)
-    res.status(200).send(JSON.stringify({message:"triggered"}))
-})
-*/
-
-
-
-async function particle_locatechip_by_celltower(req:any, res:any) {
-
-    const account = req.query.particleaccount as str
-    const id      = req.query.particleid as str
-
-    const gps = await Particle.Locate_By_Cell_Tower(account, id).catch(er=> res.status(400).send(er))
-
-    res.setHeader('Appversion', APPVERSION);
-    res.status(200).send(JSON.stringify(gps))
+function Set_Server_Mains(app:any, db:any, sheets:any, notifications:any, sse:any, appversion:number, validate_request:any) {
+    SERVER_MAINS.app = app, 
+    SERVER_MAINS.db = db
+    SERVER_MAINS.sheets = sheets
+    SERVER_MAINS.notifications = notifications
+    SERVER_MAINS.sse = sse
+    SERVER_MAINS.appversion = appversion
+    SERVER_MAINS.validate_request = validate_request
 }
 
 
 
 
-async function particle_get_device_info(req:any, res:any) {
+function Set_Routes() {
 
-    const account = req.query.particleaccount as str
-    const id      = req.query.particleid as str
+    SERVER_MAINS.app.get( '/api/xen/finance/sync_latest_gsheet',                             finance_sync_latest_gsheets)       
+    SERVER_MAINS.app.get( '/api/xen/finance/get_latest_raw_transactions',                    finance_get_latest_raw_transactions)       
+    SERVER_MAINS.app.post( '/api/xen/finance/save_raw_transaction',                          finance_save_raw_transaction)       
 
-    const info = await Particle.Get_Device_Info(account, id)
-
-    res.setHeader('Appversion', APPVERSION);
-    res.status(200).send(JSON.stringify(info))
+    SERVER_MAINS.app.get( '/api/xen/admin/firestore_misc_update',                            admin_firestore_misc_update)
 }
 
 
 
 
-async function admin_stats_particle(req:any, res:any) {
+// -- ROUTE HANDLERS --
 
-    const stats = await Stats.Get_All(db, secrets_client)
-
-    res.setHeader('Appversion', APPVERSION);
-    res.status(200).send(JSON.stringify(stats))
-
-    /*
-    function Stats_Get_MachineStatusStats(db:any, machine_id:str) {   return new Promise(async (res, _rej)=> {
-
-        const machine_statuses = db.collection(`machines/${machine_id}/statuses`)
-
-        const count_snapshot = await machine_statuses.count().get()
-
-        return res({count: count_snapshot.data().count})
-    })}
-    */
-}
-
-
+async function finance_sync_latest_gsheets(req:any, res:any) {
     
+    if (! await SERVER_MAINS.validate_request(res, req)) return 
 
-/*
-    app.get('/api/getstatusstats', (_req:any, res:any) => {
+    await Finance.Sync_Latest_GSheets(SERVER_MAINS.db, SERVER_MAINS.sheets)
+
+    res.status(200).send(JSON.stringify({}))
+}
+
+
+
+
+async function finance_get_latest_raw_transactions(req:any, res:any) {
     
-        Stats_Get_All_MachineStatusStats(db)
-            .then((statusstats:any)=> {
-                res.setHeader('Appversion', APPVERSION);
-                res.status(200).send(JSON.stringify(statusstats))
-            })
-            .catch((er:any)=> {
-                res.status(400).send(er)
-            })
-    })
-*/
+    if (! await SERVER_MAINS.validate_request(res, req)) return 
+
+    const transactions = await Finance.Get_Latest_Raw_Transactions(SERVER_MAINS.db)
+    res.status(200).send(JSON.stringify(transactions))
+}
 
 
 
 
-/*
-  app.get('/api/reconcile', (_req:any, res:any) => {
+async function finance_save_raw_transaction(req:any, res:any) {
+    
+    if (! await SERVER_MAINS.validate_request(res, req)) return 
 
-    Reconcile(db, secrets_client)
-      .then(results=> {
-        res.setHeader('Appversion', APPVERSION);
-        res.status(200).send(JSON.stringify(results))
-      })
-      .catch(er=> {
-        res.status(400).send(er)
-      })
+    const d = req.body
 
-  })
-*/
-
-
-
-/*
-    app.get('/api/data_usage/:particle_account', (req:any, res:any) => {
-
-        Particle_Data_Usage_All_Product_Chips(db, req.params.particle_account, secrets_client)
-
-            .then(results=> {
-                res.setHeader('Appversion', APPVERSION);
-                res.status(200).send(JSON.stringify(results))
-            })
-
-            .catch(er=> {
-                res.status(400).send(er)
-            })
-
-    })
-*/
-
-
-
-/*
-    app.get('/api/location_match', (req:any, res:any) => {
-
-        Location_Match(db)
-
-            .then(results=> {
-                res.setHeader('Appversion', APPVERSION);
-                res.status(200).send(JSON.stringify(results))
-            })
-
-            .catch(er=> {
-                res.status(400).send(er)
-            })
-
-    })
-*/
-
-
-
-/*
-  app.get('/api/admin_particle_rename', (_req:any, res:any) => {
-
-    Admin_Particle_Rename_Devices_To_Match_Machine_Chip(db, "accounts_risingtiger_com", secrets_client)
-      .then(results=> {
-        res.setHeader('Appversion', APPVERSION);
-        res.status(200).send(JSON.stringify(results))
-      })
-      .catch(er=> {
-        res.status(400).send(er)
-      })
-
-  })
-*/
-
-
-
-/*
-  app.get('/api/misc_quicky', (_req:any, res:any) => {
-
-    Misc_Quicky_Show_Prop_Of_All_Machines(db, secrets_client)
-      .then(results=> {
-        res.setHeader('Appversion', APPVERSION);
-        res.status(200).send(JSON.stringify(results))
-      })
-      .catch(er=> {
-        res.status(400).send(er)
-      })
-
-  })
-*/
-
-    // Admin APIs
-
-/*
-    app.get('/api/admin/pwtdata/getmachines_for_sync', (_req:any, res:any) => {
-        AdminPWTDataGetMachinesForSync(res, db);   
-    })
-*/
-
-/*
-    app.post('/api/admin/pwtdata/sync', (_req:any, res:any) => {   
-        AdminPWTDataSync(res, db);  
-    })
-*/
+    Finance.Save_Raw_Transaction(SERVER_MAINS.db, d)
+    res.status(200).send(JSON.stringify({}))
+}
 
 
 
 
+async function admin_firestore_misc_update(req:any, res:any) {
+    
+    if (! await SERVER_MAINS.validate_request(res, req)) return 
 
-//{--end_app_routes--}
+    const results = await Admin_Firestore.Misc_Update(SERVER_MAINS.db)
+    res.status(200).send(JSON.stringify(results))
+}
 
 
 
 
 
 
-//export { Init, projectId, keyFilename, identity_platform_api }
+
+
+
+
+
+
+const PROJECTID   = "xenition"
+const KEYJSONFILE = "/Users/dave/.ssh/xenition_local.json"
+const SHEETS_KEYJSONFILE = "/Users/dave/.ssh/xenition-sheets-244e0733ca64.json"
+const IDENTITY_PLATFORM_API = "AIzaSyDfXcwqyiRGGO6pMBsG8CvNEtDIhdspKRI"
+
+export default { PROJECTID, KEYJSONFILE, IDENTITY_PLATFORM_API, SHEETS_KEYJSONFILE, Set_Server_Mains, Set_Routes};
+
+
