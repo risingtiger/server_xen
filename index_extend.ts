@@ -2,8 +2,8 @@
 
 //type bool  = boolean; type str  = string; type int  = number;
 
-type SERVER_MAINS_T = { app:any, db:any, sheets:any, notifications:any, sse:any, appversion:number, validate_request:(res:any, req:any)=>Promise<string> }
-const SERVER_MAINS:SERVER_MAINS_T = { app:{}, db:{}, sheets:{}, notifications:{}, sse:{}, appversion: 0, validate_request: (_req:any) => Promise.resolve("") }
+type SERVER_MAINS_T = { app:any, db:any, Firestore:any, sheets:any, notifications:any, sse:any, appversion:number, validate_request:(res:any, req:any)=>Promise<string> }
+const SERVER_MAINS:SERVER_MAINS_T = { app:{}, db:{}, Firestore:{}, sheets:{}, notifications:{}, sse:{}, appversion: 0, validate_request: (_req:any) => Promise.resolve("") }
 
 import Finance from "./finance.js"
 import Admin_Firestore from "./admin/admin_firestore.js"
@@ -11,9 +11,10 @@ import Admin_Firestore from "./admin/admin_firestore.js"
 
 
 
-function Set_Server_Mains(app:any, db:any, sheets:any, notifications:any, sse:any, appversion:number, validate_request:any) {
-    SERVER_MAINS.app = app, 
+function Set_Server_Mains(app:any, db:any, Firestore:any, sheets:any, notifications:any, sse:any, appversion:number, validate_request:any) {
+    SERVER_MAINS.app = app 
     SERVER_MAINS.db = db
+    SERVER_MAINS.Firestore = Firestore
     SERVER_MAINS.sheets = sheets
     SERVER_MAINS.notifications = notifications
     SERVER_MAINS.sse = sse
@@ -26,11 +27,12 @@ function Set_Server_Mains(app:any, db:any, sheets:any, notifications:any, sse:an
 
 function Set_Routes() {
 
-    SERVER_MAINS.app.get( '/api/xen/finance/sync_latest_gsheet',                             finance_sync_latest_gsheets)       
-    SERVER_MAINS.app.get( '/api/xen/finance/get_latest_raw_transactions',                    finance_get_latest_raw_transactions)       
-    SERVER_MAINS.app.post( '/api/xen/finance/save_raw_transaction',                          finance_save_raw_transaction)       
+    SERVER_MAINS.app.get(  '/api/xen/finance/grab_em',                                        grab_em)       
+    SERVER_MAINS.app.get(  '/api/xen/finance/ynab_sync_categories',                           finance_ynab_sync_categories)       
+    SERVER_MAINS.app.get(  '/api/xen/finance/get_ynab_raw_transactions',                      get_ynab_raw_transactions)
+    SERVER_MAINS.app.post(  '/api/xen/finance/save_transactions_and_delete_ynab_records',     finance_save_transactions_and_delete_ynab_records)
 
-    SERVER_MAINS.app.get( '/api/xen/admin/firestore_misc_update',                            admin_firestore_misc_update)
+    SERVER_MAINS.app.get(  '/api/xen/admin/firestore_misc_update',                            admin_firestore_misc_update)
 }
 
 
@@ -38,37 +40,47 @@ function Set_Routes() {
 
 // -- ROUTE HANDLERS --
 
-async function finance_sync_latest_gsheets(req:any, res:any) {
-    
+async function grab_em(req:any, res:any) {
+
     if (! await SERVER_MAINS.validate_request(res, req)) return 
 
-    await Finance.Sync_Latest_GSheets(SERVER_MAINS.db, SERVER_MAINS.sheets)
+    const r = await Finance.Grab_Em(SERVER_MAINS.db, SERVER_MAINS.Firestore)
 
-    res.status(200).send(JSON.stringify({}))
+    res.status(200).send(JSON.stringify(r))
 }
 
 
 
 
-async function finance_get_latest_raw_transactions(req:any, res:any) {
+async function finance_ynab_sync_categories(req:any, res:any) {
     
     if (! await SERVER_MAINS.validate_request(res, req)) return 
 
-    const transactions = await Finance.Get_Latest_Raw_Transactions(SERVER_MAINS.db)
-    res.status(200).send(JSON.stringify(transactions))
+    const categories = await Finance.YNAB_Sync_Categories(SERVER_MAINS.db, SERVER_MAINS.Firestore)
+    res.status(200).send(JSON.stringify(categories))
 }
 
 
 
 
-async function finance_save_raw_transaction(req:any, res:any) {
+async function get_ynab_raw_transactions(req:any, res:any) {
     
     if (! await SERVER_MAINS.validate_request(res, req)) return 
 
-    const d = req.body
+    const response = await Finance.Get_YNAB_Raw_Transactions()
+    res.status(200).send(JSON.stringify(response))
+}
 
-    Finance.Save_Raw_Transaction(SERVER_MAINS.db, d)
-    res.status(200).send(JSON.stringify({}))
+
+
+
+async function finance_save_transactions_and_delete_ynab_records(req:any, res:any) {
+
+    if (! await SERVER_MAINS.validate_request(res, req)) return 
+
+    const r = await Finance.Save_Transactions_And_Delete_YNAB_Records(SERVER_MAINS.db, req.body)
+
+    res.status(200).send(JSON.stringify(r))
 }
 
 
@@ -94,10 +106,11 @@ async function admin_firestore_misc_update(req:any, res:any) {
 
 
 const PROJECTID   = "xenition"
+const LOCALPORT   = 3002
 const KEYJSONFILE = "/Users/dave/.ssh/xenition_local.json"
 const SHEETS_KEYJSONFILE = "/Users/dave/.ssh/xenition-sheets-244e0733ca64.json"
 const IDENTITY_PLATFORM_API = "AIzaSyDfXcwqyiRGGO6pMBsG8CvNEtDIhdspKRI"
 
-export default { PROJECTID, KEYJSONFILE, IDENTITY_PLATFORM_API, SHEETS_KEYJSONFILE, Set_Server_Mains, Set_Routes};
+export default { PROJECTID, LOCALPORT, KEYJSONFILE, IDENTITY_PLATFORM_API, SHEETS_KEYJSONFILE, Set_Server_Mains, Set_Routes};
 
 

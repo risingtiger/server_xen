@@ -7,115 +7,272 @@
 //import fs from "fs";
 
 
-async function Sync_Latest_GSheets(db:any, sheets:any) {   return new Promise<any>(async (res, _rej)=> {
+const YNAB_HOLDEM_ACCOUNT_ID = "b0b3f2b2-5067-4f57-a248-15fa97a18cf5"
 
-    const getRows = await sheets.spreadsheets.values.get({
-        spreadsheetId: '1cg95k0KGkn16E07PQcSw7g8T9ssmFBu_iQ_krJpXp8U',
-        range: "Transactions!A3:O47",
+
+
+
+async function Grab_Em(db:any, Firestore:any) {   return new Promise<any>(async (res, _rej)=> {
+
+    const token = process.env.XEN_YNAB
+
+    let promises:any[] = [
+
+        Firestore.Retrieve(db, ["areas", "cats", "tags", "sources", "transactions"]),
+
+        fetch(`https://api.ynab.com/v1/budgets/${YNAB_HOLDEM_ACCOUNT_ID}/accounts`, {
+            method: 'GET',
+            headers: { "Authorization": `Bearer ${token}` }
+        })
+    ]
+
+    let r = await Promise.all(promises)
+
+    let areas = r[0][0]
+    let cats = r[0][1]
+    let tags = r[0][2]
+    let sources = r[0][3]
+    let transactions = r[0][4]
+
+    let ynab_accounts = (await r[1].json()).data.accounts
+
+    areas.forEach((m:any)=> {
+        const ynab_account = ynab_accounts.find((n:any)=> n.id === m.ynab_savings_id)
+        m.ynab_savings = ynab_account.balance / 1000
     })
 
-    const rows = getRows.data.values
+    res({areas, cats, tags, sources, transactions})
+})}
 
-    const transactions_gsheets:any[] = []
 
-    rows.forEach((row:any[]) => {
-        const [_status, date, description, _category, amount_str, account, _account_num, institution, _currency, _channel, _sheetsync_category, _sheetsync_category_sub, full_description, id] = row
 
-        let   amount = parseFloat(amount_str.replace("$", ""))
+async function YNAB_Sync_Categories(db:any, Firestore:any) {   return new Promise<any>(async (res, _rej)=> {
 
-        if (isNaN(amount) || amount > 0) return
+    const cats_with_deleteflag:{id:string, name:string}[] = []
 
-        amount = Math.abs(amount)
+    const ynab_cats_to_skip = ["Credit Card Payments", "Hidden Categories", "Internal Master Category"]
 
-        const ts = Math.floor(new Date(date).getTime() / 1000)
+    const batch        = db.batch()
 
-        let sourcename = ""
+    const token = process.env.XEN_YNAB
 
-        if      (institution.toLowerCase().includes("barclay"))   sourcename = "barclay"
-        else if (institution.toLowerCase().includes("chase"))     sourcename = "chase"
-        else if (institution.toLowerCase().includes("mountain america") && account.toLowerCase().includes("checking"))  sourcename = "macuc"
-        else if (institution.toLowerCase().includes("mountain america") && account.toLowerCase().includes("visa"))      sourcename = "macuv"
+    const r = await Firestore.Retrieve(db, ["areas", "cats"])
 
-        const long_desc = full_description
-        const short_desc = description
+    const areas = r[0]
+    const cats = r[1]
 
-        const transaction = {sheetsid:id, sourcename, long_desc, short_desc, amount, ts, processed:false }
+    const all_ynab_cats:{id:string,parentid:string|null}[] = []
 
-        transactions_gsheets.push(transaction)
-    })
+    for(const a of areas) {
 
-    const transactions_raw_docs = await db.collection('transactions_raw').orderBy('ts', 'desc').limit(55).get()
-    const transactions_raw = transactions_raw_docs.docs.map((m: any) => ({ id: m.id, ...m.data() }));
+        const r = await fetch(`https://api.ynab.com/v1/budgets/${a.id}/categories`, {
+            method: 'GET',
+            headers: {
+                "Authorization": `Bearer ${token}`
+            }
+        })
 
-    const new_raw_transactions:any[] = []
+        const rjson = await r.json()
+        const ynab_cat_groups = rjson.data.category_groups
 
-    for (const trgsh of transactions_gsheets) {
-        let found = transactions_raw.find((m: any) => m.sheetsid === trgsh.sheetsid)
-        if (!found) new_raw_transactions.push(trgsh)
-    }
+        for(const cg of ynab_cat_groups) {
 
-    if (new_raw_transactions.length > 0) {
-        const batch = db.batch()
+            if (ynab_cats_to_skip.includes(cg.name)) continue
 
-        for (const t of new_raw_transactions) {
-            const docref = db.collection('transactions_raw').doc()
-            batch.set(docref, t)
+            let cat = cats.find((c:any)=> c.id === cg.id)
+            
+            if (cg.hidden || cg.deleted) {
+
+                if (cat) {
+                    cat.deleteflag = true
+                    cat.ts = Math.floor(Date.now() / 1000)
+                    batch.update(db.collection('cats').doc(cat.id), cat)
+
+                    cats_with_deleteflag.push({id:cat.id, name:cat.name})
+                }
+
+            } else {
+
+                all_ynab_cats.push({id:cg.id, parentid:null})
+
+                if (!cat) {
+                    cat = {
+                        area: db.collection("areas").doc(a.id),
+                        budget: null,
+                        name: cg.name,
+                        parent: null,
+                        tags: null,
+                        deleteflag: false,
+                        ts: Math.floor(Date.now() / 1000)
+                    }
+
+                    const newcatdoc = db.collection('cats').doc(cg.id)
+                    batch.set(newcatdoc, cat)
+
+                } else {
+                    cat.budget = null
+                    cat.name = cg.name
+                    cat.parent = null
+                    cat.tags = null
+                    cat.deleteflag = false
+                    cat.ts = Math.floor(Date.now() / 1000)
+                    batch.update(db.collection('cats').doc(cat.id), cat)
+                }
+            }
+
+            for(const ccg of cg.categories) {
+                
+                let c = cats.find((m:any)=> m.id === ccg.id)
+                let hashindex = ccg.name.lastIndexOf("#")
+                let cattags = (hashindex > 0) ? ccg.name.slice(hashindex+1,ccg.name.length).split(",").map((c:string)=> parseInt(c)) : []
+                let name = (hashindex > 0) ? ccg.name.slice(0,hashindex-1) : ccg.name
+
+                if (ccg.hidden || ccg.deleted || cattags.length === 0) {
+
+                    if (c) {
+                        c.deleteflag = true
+                        c.ts = Math.floor(Date.now() / 1000)
+                        batch.update(db.collection('cats').doc(c.id), c)
+
+                        cats_with_deleteflag.push({id:c.id, name:c.name})
+                    }
+
+                } else {
+
+                    all_ynab_cats.push({id:ccg.id, parentid:cg.id})
+
+                    if (!c) {
+                        c = {
+                            area: null,
+                            budget: Math.floor(ccg.goal_target/1000),
+                            name: name,
+                            parent: db.collection("cats").doc(cg.id),
+                            tags: cattags,
+                            deleteflag: false,
+                            ts: Math.floor(Date.now() / 1000)
+                        }
+
+                        const newcatdoc = db.collection('cats').doc(ccg.id)
+                        batch.set(newcatdoc, c)
+
+                    } else {
+                        c.area = null
+                        c.budget = Math.floor(ccg.goal_target/1000)
+                        c.name = name
+                        c.parent = db.collection("cats").doc(cg.id)
+                        c.tags = cattags
+                        c.deleteflag = false
+                        c.ts = Math.floor(Date.now() / 1000)
+                        batch.update(db.collection('cats').doc(c.id), c)
+                    }
+                }
+            }
         }
-
-        batch.commit().catch((err:any)=> console.error(err))
     }
 
-    res({})
+    for(const c of cats) {
+        const has_ynab_corresponding = all_ynab_cats.find((m:any)=> m.id === c.id)
+
+        if (!has_ynab_corresponding) {
+            c.deleteflag = true
+            c.ts = Math.floor(Date.now() / 1000)
+            batch.update(db.collection('cats').doc(c.id), c)
+
+            cats_with_deleteflag.push({id:c.id, name:c.name})
+        }
+    }
+
+    await batch.commit().catch((err:any)=> console.error(err))
+
+    res({cats_with_deleteflag})
 })}
 
 
 
 
-async function Get_Latest_Raw_Transactions(db:any) {   return new Promise<any>(async (res, _rej)=> {
+async function Get_YNAB_Raw_Transactions() {   return new Promise<any>(async (res, _rej)=> {
 
-    const transactions_raw_docs = await db.collection('transactions_raw').where('processed', '==', false).limit(12).get()
-    const transactions_raw = transactions_raw_docs.docs.map((m: any) => ({ id: m.id, ...m.data() }));
+    const promises:any[] = []
 
-    res(transactions_raw)
+    const token = process.env.XEN_YNAB
+
+    promises.push(fetch(`https://api.ynab.com/v1/budgets/${YNAB_HOLDEM_ACCOUNT_ID}/transactions?type=uncategorized`, {
+        method: 'GET',
+        headers: {
+            "Authorization": `Bearer ${token}`
+        }
+    }))
+
+    let r = await Promise.all(promises)
+
+    const ynab_t = await r[0].json()
+
+    const ynab_raw_transactions:any[] = []
+
+    for(const nt of ynab_t.data.transactions) {
+
+        if (nt.amount < 0) {
+            const raw_transaction = {
+                ynab_id: nt.id,
+                amount: Math.round(Math.abs(nt.amount) / 1000),
+                merchant: nt.payee_name,
+                notes: nt.memo || "",
+                source_id: nt.account_id,
+                tags: nt.flag_name ? [nt.flag_name] : [],
+                ts: (new Date(nt.date).getTime() / 1000)
+            }
+            ynab_raw_transactions.push(raw_transaction)
+        }
+    }
+
+    res({ok:true, raw_transactions: ynab_raw_transactions})
 })}
 
 
 
 
-async function Save_Raw_Transaction(db:any, body:any) {   return new Promise<any>(async (res, _rej)=> {
+async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:any) {   return new Promise<any>(async (res, rej)=> {
 
     const batch = db.batch()
 
-    const docref = db.collection('transactions_raw').doc(body.transaction_raw_id)
+    for(const nt of transactions) {
 
-    batch.update(docref, { processed: true })
+        if (nt.skipsave) continue
 
-    for(const nt of body.newtransactions) {
-        const docref = db.collection('transactions').doc()
-
-        const newtransaction = {
+        const d = {
             amount: nt.amount,
-            cat: db.collection("cats").doc(nt.catid),
+            cat: db.collection("cats").doc(nt.cat_id),
             merchant: nt.merchant,
             notes: nt.notes,
-            source: db.collection("sources").doc(nt.sourceid),
+            source: db.collection("sources").doc(nt.source_id),
             tags: [],
             ts: nt.ts
         }
 
-        newtransaction.tags = nt.tagids.map((m:any)=> db.collection("tags").doc(m))
-
-        batch.set(docref, newtransaction)
+        const docref = db.collection('transactions').doc()
+        batch.set(docref, d)
     }
-    
-    batch.commit().catch((err:any)=> console.error(err))
 
-    res({})
+    batch.commit().catch((err:any)=> { rej(err); return })
+
+    const token = process.env.XEN_YNAB
+
+    transactions.forEach(async (t:any)=> {
+
+        await fetch(`https://api.ynab.com/v1/budgets/${YNAB_HOLDEM_ACCOUNT_ID}/transactions/${t.ynab_id}`, {
+            method: 'DELETE',
+            headers: {
+                "Authorization": `Bearer ${token}`
+            }
+        })
+    })
+
+    res({ok:true})
 })}
 
 
 
 
-const Finance = { Sync_Latest_GSheets, Get_Latest_Raw_Transactions, Save_Raw_Transaction };
+const Finance = { Grab_Em, YNAB_Sync_Categories, Get_YNAB_Raw_Transactions, Save_Transactions_And_Delete_YNAB_Records };
 
 export default Finance;
