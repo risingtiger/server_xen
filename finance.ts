@@ -8,6 +8,16 @@
 
 
 const YNAB_HOLDEM_ACCOUNT_ID = "b0b3f2b2-5067-4f57-a248-15fa97a18cf5"
+const YNAB_FAMILY_ACCOUNT_ID = "dbb7396b-413f-40d7-9a3f-7c986e485233"
+
+
+
+
+const payees_to_skip = [
+    "APPLECARD GSBANK", 
+    "Starting Balance",
+    "AMZN Mktp"
+]
 
 
 
@@ -18,9 +28,14 @@ async function Grab_Em(db:any, Firestore:any) {   return new Promise<any>(async 
 
     let promises:any[] = [
 
-        Firestore.Retrieve(db, ["areas", "cats", "tags", "sources", "transactions"]),
+        Firestore.Retrieve(db, ["areas", "cats", "sources", "tags", "transactions", "monthsnapshots"]),
 
         fetch(`https://api.ynab.com/v1/budgets/${YNAB_HOLDEM_ACCOUNT_ID}/accounts`, {
+            method: 'GET',
+            headers: { "Authorization": `Bearer ${token}` }
+        }),
+
+        fetch(`https://api.ynab.com/v1/budgets/${YNAB_FAMILY_ACCOUNT_ID}/accounts`, {
             method: 'GET',
             headers: { "Authorization": `Bearer ${token}` }
         })
@@ -29,19 +44,29 @@ async function Grab_Em(db:any, Firestore:any) {   return new Promise<any>(async 
     let r = await Promise.all(promises)
 
     let areas = r[0][0]
+
     let cats = r[0][1]
-    let tags = r[0][2]
-    let sources = r[0][3]
+
+    let sources = r[0][2]
+
+    let tags = r[0][3]
+
     let transactions = r[0][4]
 
-    let ynab_accounts = (await r[1].json()).data.accounts
+    let previous_static_monthsnapshots = r[0][5]
+
+    let ynab_holdem_accounts = (await r[1].json()).data.accounts
+
+    let ynab_family_accounts = (await r[2].json()).data.accounts
+
+    let ynab_accounts = [...ynab_holdem_accounts, ...ynab_family_accounts]
 
     areas.forEach((m:any)=> {
         const ynab_account = ynab_accounts.find((n:any)=> n.id === m.ynab_savings_id)
         m.ynab_savings = ynab_account.balance / 1000
     })
 
-    res({areas, cats, tags, sources, transactions})
+    res({areas, cats, sources, tags, transactions, previous_static_monthsnapshots})
 })}
 
 
@@ -190,43 +215,113 @@ async function YNAB_Sync_Categories(db:any, Firestore:any) {   return new Promis
 
 
 
-async function Get_YNAB_Raw_Transactions() {   return new Promise<any>(async (res, _rej)=> {
+async function Get_YNAB_Raw_Transactions(db:any) {   return new Promise<any>(async (res, _rej)=> {
 
     const promises:any[] = []
 
     const token = process.env.XEN_YNAB
 
-    promises.push(fetch(`https://api.ynab.com/v1/budgets/${YNAB_HOLDEM_ACCOUNT_ID}/transactions?type=uncategorized`, {
+    let d = new Date()
+    d.setMonth(d.getMonth() - 1)
+    let since_date = `${d.getUTCFullYear()}-${(d.getUTCMonth() + 1).toString().padStart(2, '0')}-${d.getUTCDate().toString().padStart(2, '0')}`
+
+    promises.push(fetch(`https://api.ynab.com/v1/budgets/${YNAB_HOLDEM_ACCOUNT_ID}/transactions?since_date=${since_date}`, {
         method: 'GET',
         headers: {
             "Authorization": `Bearer ${token}`
         }
     }))
 
+    promises.push(fetch(`https://api.ynab.com/v1/budgets/${YNAB_FAMILY_ACCOUNT_ID}/transactions?since_date=${since_date}`, {
+        method: 'GET',
+        headers: {
+            "Authorization": `Bearer ${token}`
+        }
+    }))
+
+    promises.push(db.collection("transactions").orderBy("ts", "desc").limit(200).get())
+
     let r = await Promise.all(promises)
 
-    const ynab_t = await r[0].json()
+    const existing_transactions = r[2].docs.map((m: any) => ({ id: m.id, ...m.data() }));
+
+    const ynab_t_holdem =               await r[0].json()
+    const ynab_t_family =               await r[1].json()
+
+    ynab_t_holdem.data.transactions.forEach((m:any)=> m.preset_area_id = null)
+    ynab_t_family.data.transactions.forEach((m:any)=> m.preset_area_id = YNAB_FAMILY_ACCOUNT_ID)
+
+    const combined_ynab_t = [...ynab_t_holdem.data.transactions, ...ynab_t_family.data.transactions]
 
     const ynab_raw_transactions:any[] = []
 
-    for(const nt of ynab_t.data.transactions) {
+    for(const nt of combined_ynab_t) {
+
+        if (is_transaction_irrelevant(nt)) continue
+
+        const d = new Date()
+        d.setUTCFullYear(nt.date.slice(0,4))
+        d.setUTCMonth( Number(nt.date.slice(5,7)) - 1)
+        d.setUTCDate(nt.date.slice(8,10))
+        d.setUTCHours(10)
+        d.setUTCMinutes(0)
+        d.setUTCSeconds(0)
 
         if (nt.amount < 0) {
-            const raw_transaction = {
-                ynab_id: nt.id,
-                amount: Math.round(Math.abs(nt.amount) / 1000),
-                merchant: nt.payee_name,
-                notes: nt.memo || "",
-                source_id: nt.account_id,
-                tags: nt.flag_name ? [nt.flag_name] : [],
-                ts: (new Date(nt.date).getTime() / 1000)
+
+            if (nt.subtransactions.length) {
+
+                for(const st of nt.subtransactions) {
+
+                    if (existing_transactions.find((t:any)=> t.ynab_id === st.id)) continue
+
+                    const raw_transaction = {
+                        ynab_id: st.id,
+                        preset_area_id: nt.preset_area_id,
+                        preset_cat_name: st.category_name || null,
+                        amount: Math.abs(st.amount) / 1000,
+                        merchant: nt.payee_name,
+                        notes: nt.memo || "",
+                        source_id: nt.account_id,
+                        tags: nt.flag_name ? [nt.flag_name] : [],
+                        ts: Math.floor(d.getTime() / 1000)
+                    }
+
+                    ynab_raw_transactions.push(raw_transaction)
+                }
+
+            } else {
+
+                if (existing_transactions.find((t:any)=> t.ynab_id === nt.id)) continue
+
+                const raw_transaction = {
+                    ynab_id: nt.id,
+                    preset_area_id: nt.preset_area_id,
+                    preset_cat_name: nt.category_name || null,
+                    amount: Math.abs(nt.amount) / 1000,
+                    merchant: nt.payee_name,
+                    notes: nt.memo || "",
+                    source_id: nt.account_id,
+                    tags: nt.flag_name ? [nt.flag_name] : [],
+                    ts: Math.floor(d.getTime() / 1000)
+                }
+
+                ynab_raw_transactions.push(raw_transaction)
             }
-            ynab_raw_transactions.push(raw_transaction)
         }
     }
 
     res({ok:true, raw_transactions: ynab_raw_transactions})
 })}
+
+function is_transaction_irrelevant(t:any) {
+
+    const x = payees_to_skip.find((m:string)=> {
+        const p = t.import_payee_name_original || t.payee_name
+        return p.includes(m)
+    })
+    return x ? true : false
+}
 
 
 
@@ -237,15 +332,14 @@ async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:an
 
     for(const nt of transactions) {
 
-        if (nt.skipsave) continue
-
         const d = {
             amount: nt.amount,
             cat: db.collection("cats").doc(nt.cat_id),
             merchant: nt.merchant,
             notes: nt.notes,
             source: db.collection("sources").doc(nt.source_id),
-            tags: [],
+            tags: nt.tag_ids.map((m:string)=> db.collection("tags").doc(m)),
+            ynab_id: nt.ynab_id,
             ts: nt.ts
         }
 
@@ -255,6 +349,7 @@ async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:an
 
     batch.commit().catch((err:any)=> { rej(err); return })
 
+    /*
     const token = process.env.XEN_YNAB
 
     transactions.forEach(async (t:any)=> {
@@ -266,6 +361,7 @@ async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:an
             }
         })
     })
+    */
 
     res({ok:true})
 })}
@@ -273,6 +369,27 @@ async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:an
 
 
 
-const Finance = { Grab_Em, YNAB_Sync_Categories, Get_YNAB_Raw_Transactions, Save_Transactions_And_Delete_YNAB_Records };
+async function Save_Month_Snapshots(db:any, snapshots:any) {   return new Promise<any>(async (res, rej)=> {
+
+    const batch = db.batch()
+
+    for(const snapshot of snapshots) {
+
+        snapshot.area = db.collection("areas").doc(snapshot.areaid)
+        delete snapshot.areaid
+
+        const docref = db.collection('monthsnapshots').doc()
+        batch.set(docref, snapshot)
+    }
+
+    batch.commit().catch((err:any)=> { rej(err); return })
+
+    res({ok:true})
+})}
+
+
+
+
+const Finance = { Grab_Em, YNAB_Sync_Categories, Get_YNAB_Raw_Transactions, Save_Transactions_And_Delete_YNAB_Records, Save_Month_Snapshots };
 
 export default Finance;

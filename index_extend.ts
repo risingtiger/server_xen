@@ -31,6 +31,7 @@ function Set_Routes() {
     SERVER_MAINS.app.get(  '/api/xen/finance/ynab_sync_categories',                           finance_ynab_sync_categories)       
     SERVER_MAINS.app.get(  '/api/xen/finance/get_ynab_raw_transactions',                      get_ynab_raw_transactions)
     SERVER_MAINS.app.post(  '/api/xen/finance/save_transactions_and_delete_ynab_records',     finance_save_transactions_and_delete_ynab_records)
+    SERVER_MAINS.app.post(  '/api/xen/finance/save_month_snapshots',                          finance_save_month_snapshots)
 
     SERVER_MAINS.app.get(  '/api/xen/admin/firestore_misc_update',                            admin_firestore_misc_update)
 }
@@ -67,7 +68,7 @@ async function get_ynab_raw_transactions(req:any, res:any) {
     
     if (! await SERVER_MAINS.validate_request(res, req)) return 
 
-    const response = await Finance.Get_YNAB_Raw_Transactions()
+    const response = await Finance.Get_YNAB_Raw_Transactions(SERVER_MAINS.db)
     res.status(200).send(JSON.stringify(response))
 }
 
@@ -79,6 +80,18 @@ async function finance_save_transactions_and_delete_ynab_records(req:any, res:an
     if (! await SERVER_MAINS.validate_request(res, req)) return 
 
     const r = await Finance.Save_Transactions_And_Delete_YNAB_Records(SERVER_MAINS.db, req.body)
+
+    res.status(200).send(JSON.stringify(r))
+}
+
+
+
+
+async function finance_save_month_snapshots(req:any, res:any) {
+
+    if (! await SERVER_MAINS.validate_request(res, req)) return 
+
+    const r = await Finance.Save_Month_Snapshots(SERVER_MAINS.db, req.body)
 
     res.status(200).send(JSON.stringify(r))
 }
