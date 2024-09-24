@@ -11,13 +11,11 @@ import Admin_Firestore from "./admin/admin_firestore.js"
 
 
 
-function Set_Server_Mains(app:any, db:any, Firestore:any, sheets:any, notifications:any, sse:any, appversion:number, validate_request:any) {
+function Set_Server_Mains(app:any, db:any, sheets:any, notifications:any, appversion:number, validate_request:any) {
     SERVER_MAINS.app = app 
     SERVER_MAINS.db = db
-    SERVER_MAINS.Firestore = Firestore
     SERVER_MAINS.sheets = sheets
     SERVER_MAINS.notifications = notifications
-    SERVER_MAINS.sse = sse
     SERVER_MAINS.appversion = appversion
     SERVER_MAINS.validate_request = validate_request
 }
@@ -118,12 +116,12 @@ async function admin_firestore_misc_update(req:any, res:any) {
 
 
 
+const INSTANCEID = "xen"
 const PROJECTID   = "xenition"
-const LOCALPORT   = 3002
 const KEYJSONFILE = "/Users/dave/.ssh/xenition_local.json"
 const SHEETS_KEYJSONFILE = "/Users/dave/.ssh/xenition-sheets-244e0733ca64.json"
 const IDENTITY_PLATFORM_API = "AIzaSyDfXcwqyiRGGO6pMBsG8CvNEtDIhdspKRI"
 
-export default { PROJECTID, LOCALPORT, KEYJSONFILE, IDENTITY_PLATFORM_API, SHEETS_KEYJSONFILE, Set_Server_Mains, Set_Routes};
+export default { INSTANCEID, PROJECTID, KEYJSONFILE, IDENTITY_PLATFORM_API, SHEETS_KEYJSONFILE, Set_Server_Mains, Set_Routes};
 
 

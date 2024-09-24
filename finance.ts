@@ -5,6 +5,8 @@
 
 //import {FieldValue} from "@google-cloud/firestore"
 //import fs from "fs";
+import SSE from "../sse.js"
+import { SSE_TriggersE  } from '../definitions.js'
 
 
 const YNAB_HOLDEM_ACCOUNT_ID = "b0b3f2b2-5067-4f57-a248-15fa97a18cf5"
@@ -28,7 +30,7 @@ async function Grab_Em(db:any, Firestore:any) {   return new Promise<any>(async 
 
     let promises:any[] = [
 
-        Firestore.Retrieve(db, ["areas", "cats", "sources", "tags", "transactions", "monthsnapshots"]),
+        //Firestore.Retrieve(db, ["areas", "cats", "sources", "tags", "transactions", "monthsnapshots"]),
 
         fetch(`https://api.ynab.com/v1/budgets/${YNAB_HOLDEM_ACCOUNT_ID}/accounts`, {
             method: 'GET',
@@ -43,6 +45,7 @@ async function Grab_Em(db:any, Firestore:any) {   return new Promise<any>(async 
 
     let r = await Promise.all(promises)
 
+	/*
     let areas = r[0][0]
 
     let cats = r[0][1]
@@ -55,18 +58,22 @@ async function Grab_Em(db:any, Firestore:any) {   return new Promise<any>(async 
 
     let previous_static_monthsnapshots = r[0][5]
 
-    let ynab_holdem_accounts = (await r[1].json()).data.accounts
+	*/
 
-    let ynab_family_accounts = (await r[2].json()).data.accounts
+    let ynab_holdem_accounts = (await r[0].json()).data.accounts
+
+    let ynab_family_accounts = (await r[1].json()).data.accounts
 
     let ynab_accounts = [...ynab_holdem_accounts, ...ynab_family_accounts]
 
+	/*
     areas.forEach((m:any)=> {
         const ynab_account = ynab_accounts.find((n:any)=> n.id === m.ynab_savings_id)
         m.ynab_savings = ynab_account.balance / 1000
     })
+	*/
 
-    res({areas, cats, sources, tags, transactions, previous_static_monthsnapshots})
+    res({ynab_accounts})
 })}
 
 
@@ -329,6 +336,7 @@ function is_transaction_irrelevant(t:any) {
 async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:any) {   return new Promise<any>(async (res, rej)=> {
 
     const batch = db.batch()
+	const now = Math.floor(Date.now() / 1000)
 
     for(const nt of transactions) {
 
@@ -340,7 +348,8 @@ async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:an
             source: db.collection("sources").doc(nt.source_id),
             tags: nt.tag_ids.map((m:string)=> db.collection("tags").doc(m)),
             ynab_id: nt.ynab_id,
-            ts: nt.ts
+			transacted_ts: nt.ts,
+            ts: now
         }
 
         const docref = db.collection('transactions').doc()
@@ -348,6 +357,9 @@ async function Save_Transactions_And_Delete_YNAB_Records(db:any, transactions:an
     }
 
     batch.commit().catch((err:any)=> { rej(err); return })
+
+	SSE.TriggerEvent(SSE_TriggersE.FIRESTORE, {paths: ["transactions"]})
+
 
     /*
     const token = process.env.XEN_YNAB
